@@ -1,0 +1,229 @@
+'use client';
+
+import React, { useEffect, useState } from 'react';
+import MonitoringCards from '../components/MonitoringCards';
+import HistoricalCharts from '../components/HistoricalCharts';
+import SmartAdviceWidget from '../components/SmartAdviceWidget';
+import GrowthStageSelector from '../components/GrowthStageSelector';
+import PumpControlWidget from '../components/PumpControlWidget';
+import AuthGuard from '../components/AuthGuard';
+import { useAuth } from '../components/AuthContext';
+import { AlertCircle, LogOut } from 'lucide-react';
+import { API_URL } from '../components/config';
+
+export default function DashboardPage() {
+  const { logout } = useAuth();
+  const [currentData, setCurrentData] = useState({
+    soilMoisture: 0,
+    airHumidity: 0,
+    airTemperature: 0,
+    lightIntensity: 0,
+    nitrogen: 0,
+    phosphorus: 0,
+    potassium: 0,
+    timestamp: '',
+  });
+
+  const [displayTime, setDisplayTime] = useState<Date>(new Date());
+  const [historicalTrends, setHistoricalTrends] = useState<any[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Đồng hồ thời gian thực - chạy liên tục bằng giờ hệ thống trình duyệt
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setDisplayTime(new Date());
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  useEffect(() => {
+    async function fetchDashboardData() {
+      try {
+        // Fetch current sensor reading
+        const sensorRes = await fetch(`${API_URL}/api/sensor-data/latest`);
+        const sensorData = await sensorRes.json();
+        
+        if (sensorData && sensorData.length > 0) {
+          setCurrentData(sensorData[0]);
+        }
+
+        // Fetch predictions
+        const predRes = await fetch(`${API_URL}/api/prediction/latest`);
+        const predictionData = await predRes.json();
+
+        // Map predictions to chart format
+        // The Chart needs { time, soilMoisture, airHumidity, predictedMoisture }
+        
+        // History Data (Actuals)
+        const histRes = await fetch(`${API_URL}/api/sensor-data/history`);
+        const historyData = await histRes.json();
+
+        const mappedTrends: any[] = [];
+        
+        // Push actual past records (Aggregate by Hour to reduce noise but retain line shape)
+        if (historyData && historyData.length > 0) {
+          const aggregates: Record<string, { moistureSum: number; humiditySum: number; count: number; timestamp: number }> = {};
+          
+          historyData.forEach((record: any) => {
+            // Group by DD/MM HH:00
+            const dateObj = new Date(record.timestamp);
+            const baseDate = new Date(dateObj);
+            baseDate.setMinutes(0, 0, 0);
+            const keyStr = baseDate.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' }) + ' ' + baseDate.getHours().toString().padStart(2, '0') + ':00';
+            
+            if (!aggregates[keyStr]) {
+              aggregates[keyStr] = { moistureSum: 0, humiditySum: 0, count: 0, timestamp: baseDate.getTime() };
+            }
+            aggregates[keyStr].moistureSum += record.soilMoisture;
+            aggregates[keyStr].humiditySum += record.airHumidity || 0;
+            aggregates[keyStr].count += 1;
+          });
+
+          for (const [key, data] of Object.entries(aggregates)) {
+            mappedTrends.push({
+              time: key,
+              timestamp: data.timestamp,
+              soilMoisture: Number((data.moistureSum / data.count).toFixed(1)),
+              airHumidity: Number((data.humiditySum / data.count).toFixed(1)),
+              predictedMoisture: null,
+            });
+          }
+        }
+
+        // Push future and past predicted records (Overlay or append)
+        if (predictionData && predictionData.length > 0) {
+          predictionData.forEach((pred: any) => {
+            const dateObj = new Date(pred.forecastDate);
+            const baseDate = new Date(dateObj);
+            baseDate.setMinutes(0, 0, 0);
+            const timeStr = baseDate.toLocaleDateString('vi-VN', { day: '2-digit', month: '2-digit' }) + ' ' + 
+                            baseDate.getHours().toString().padStart(2, '0') + ':00';
+            
+            const existing = mappedTrends.find(t => t.time === timeStr);
+            if (existing) {
+              existing.predictedMoisture = pred.predictedValue;
+            } else {
+              mappedTrends.push({
+                time: timeStr,
+                timestamp: baseDate.getTime(),
+                soilMoisture: null,
+                airHumidity: null,
+                predictedMoisture: pred.predictedValue,
+              });
+            }
+          });
+        }
+
+        // Sort chronologically by numerical timestamp
+        mappedTrends.sort((a, b) => a.timestamp - b.timestamp);
+
+        setHistoricalTrends(mappedTrends);
+      } catch (error) {
+        console.error('Error fetching dashboard data:', error);
+      } finally {
+        setIsLoading(false);
+      }
+    }
+
+    fetchDashboardData();
+    const interval = setInterval(fetchDashboardData, 30000); // 30s auto-refresh
+    return () => clearInterval(interval);
+  }, []);
+
+  const needsSmartAlert = currentData.soilMoisture < 30 && currentData.soilMoisture > 0;
+
+  return (
+    <AuthGuard>
+    <div className="min-h-screen bg-green-50 p-4 md:p-8 font-sans">
+      <div className="max-w-7xl mx-auto space-y-8">
+        
+        {/* Header Section */}
+        <header className="flex flex-col md:flex-row justify-between items-start md:items-center bg-emerald-700 text-white p-6 rounded-2xl shadow-lg">
+          <div>
+            <h1 className="text-3xl font-extrabold tracking-tight">
+              HỆ THỐNG GIÁM SÁT MÔI TRƯỜNG CANH TÁC ĐÀO NHẬT TÂN
+            </h1>
+          </div>
+          <div className="mt-4 md:mt-0 flex items-center gap-3">
+            <div className="px-4 py-2 bg-emerald-800 rounded-lg shadow-inner flex flex-col md:items-end">
+              <div className="flex items-center">
+                <span className="text-sm font-bold opacity-80">Live Data</span>
+                {isLoading && <span className="ml-2 animate-pulse text-emerald-300">...loading</span>}
+              </div>
+              {displayTime && (
+                <div className="text-xs text-emerald-200 mt-1 font-medium flex items-center">
+                  <span className="mr-1">⏱</span> 
+                  {displayTime.toLocaleString('vi-VN', { 
+                    hour: '2-digit', minute: '2-digit', second: '2-digit',
+                    day: '2-digit', month: '2-digit', year: 'numeric' 
+                  })}
+                </div>
+              )}
+            </div>
+            <button
+              onClick={logout}
+              className="flex items-center gap-2 px-4 py-2.5 bg-emerald-800/80 hover:bg-red-600 text-emerald-200 hover:text-white rounded-lg text-sm font-semibold transition-all duration-200 border border-emerald-600/50 hover:border-red-500"
+              title="Đăng xuất"
+            >
+              <LogOut className="w-4 h-4" />
+              <span className="hidden md:inline">Đăng xuất</span>
+            </button>
+          </div>
+        </header>
+
+        {/* Smart Alerts Section */}
+        {needsSmartAlert && (
+          <div className="bg-red-50 border-l-4 border-red-500 p-4 rounded-r-xl shadow-sm flex items-start animate-pulse">
+            <AlertCircle className="h-6 w-6 text-red-500 mr-3 flex-shrink-0" />
+            <div>
+              <h3 className="text-red-800 font-bold">SMART ALERT</h3>
+              <p className="text-red-700 text-sm mt-1">
+                Độ ẩm đất chỉ ở mức {currentData.soilMoisture}%. Bơm tự động đã được kích hoạt!
+              </p>
+            </div>
+          </div>
+        )}
+
+        {/* Main Content Area */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
+          
+          <div className="lg:col-span-2 space-y-8">
+            <section>
+              <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center">
+                <span className="bg-lime-500 w-2 h-8 rounded-full mr-3 inline-block"></span>
+                Thông số trực tiếp (ESP32 via MQTTS)
+              </h2>
+              <MonitoringCards data={currentData} />
+            </section>
+
+            <section>
+              <h2 className="text-2xl font-bold text-gray-800 mb-6 flex items-center">
+                <span className="bg-emerald-500 w-2 h-8 rounded-full mr-3 inline-block"></span>
+                Phân tích và Dự báo Độ Ẩm đất thịt
+              </h2>
+              <HistoricalCharts data={historicalTrends} />
+            </section>
+          </div>
+
+          {/* Right Column / Widgets */}
+          <div className="space-y-8">
+             <section className="mt-2 md:mt-0">
+               <PumpControlWidget />
+             </section>
+             <section>
+               <GrowthStageSelector />
+             </section>
+             <section>
+               <SmartAdviceWidget />
+             </section>
+          </div>
+
+        </div>
+        
+      </div>
+    </div>
+    </AuthGuard>
+  );
+}
+
